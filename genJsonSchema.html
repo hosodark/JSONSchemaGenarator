@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>JSON Schema ジェネレーター</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .schema-container {
+            white-space: pre-wrap;
+            font-family: monospace;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+        .add-field-button, .add-item-button {
+            color: blue;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .field-form, .item-form {
+            margin: 10px 0;
+            background-color: #f9f9f9;
+            padding: 10px;
+            border: 1px solid #ccc;
+            position: absolute;
+            z-index: 10;
+        }
+        .field-form label, .item-form label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .field-form input, .field-form select, .item-form select {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>JSON Schema ジェネレーター</h1>
+
+<h2>現在のスキーマ</h2>
+<div id="schema-container" class="schema-container"></div>
+
+<button id="complete-button">完成</button>
+<button id="save-button">保存</button>
+<button id="load-button">読み込み</button>
+<input type="file" id="load-input" style="display: none;">
+
+<h2>完成したスキーマ</h2>
+<button onclick="copyToClipboard()">クリップボードにコピー</button>
+<div id="final-schema-container" class="schema-container"></div>
+
+<script>
+    const schema = {
+        type: "object",
+        properties: []
+    };
+
+    const requiredFields = new Map();
+    requiredFields.set('', []);
+
+    let currentAddFieldPath = '';
+    let currentAddFieldIndex = 0;
+
+    let currentAddItemPath = '';
+    let currentAddItemIndex = 0;
+
+    function renderSchema(schemaObj, path) {
+        let html = '';
+
+        if (schemaObj.type === 'object') {
+            html += '{\n';
+            html += '  "type": "object",\n';
+            html += '  "properties": {\n';
+
+            const properties = schemaObj.properties || [];
+            properties.forEach((propEntry, index) => {
+                // ＋フィールドを追加ボタン（各フィールドの前）
+                const addFieldHtml = getAddFieldButtonHtml(path, index);
+                html += '    ' + addFieldHtml + '\n';
+
+                const key = propEntry.name;
+                const prop = propEntry.schema;
+                const propPath = path ? path + '.properties.' + key : 'properties.' + key;
+                html += `    "${key}": `;
+
+                // ネストされたプロパティをインデント
+                const nestedHtml = renderSchema(prop, propPath).split('\n').map(line => '    ' + line).join('\n');
+                html += nestedHtml + ',\n';
+            });
+
+            // 最後の＋フィールドを追加ボタン
+            const addFieldHtml = getAddFieldButtonHtml(path, properties.length);
+            html += '    ' + addFieldHtml + '\n';
+
+            html += '  }';
+
+            // requiredフィールドの処理
+            const reqFields = requiredFields.get(path) || [];
+            if (reqFields.length > 0) {
+                html += ',\n  "required": [\n';
+                reqFields.forEach((field, index) => {
+                    html += `    "${field}"`;
+                    if (index < reqFields.length - 1) {
+                        html += ',\n';
+                    } else {
+                        html += '\n';
+                    }
+                });
+                html += '  ]';
+            }
+
+            html += '\n}';
+        } else if (schemaObj.type === 'array') {
+            html += '{\n';
+            html += '  "type": "array",\n';
+            html += '  "items": [\n';
+
+            const items = schemaObj.items || [];
+            items.forEach((itemSchema, index) => {
+                // ＋アイテムを追加ボタン（各アイテムの前）
+                const addItemHtml = getAddItemButtonHtml(path, index);
+                html += '    ' + addItemHtml + '\n';
+
+                const itemPath = path ? path + '.items[' + index + ']' : 'items[' + index + ']';
+
+                // ネストされたアイテムをインデント
+                const nestedHtml = renderSchema(itemSchema, itemPath).split('\n').map(line => '    ' + line).join('\n');
+                html += nestedHtml + ',\n';
+            });
+
+            // 最後の＋アイテムを追加ボタン
+            const addItemHtml = getAddItemButtonHtml(path, items.length);
+            html += '    ' + addItemHtml + '\n';
+
+            html += '  ]\n';
+            html += '}';
+        } else {
+            html += '{\n';
+            html += `  "type": "${schemaObj.type}"\n`;
+            html += '}';
+        }
+
+        return html;
+    }
+
+    function getAddFieldButtonHtml(path, index) {
+        return `<span class="add-field-button" data-path="${path}" data-index="${index}">＋フィールドを追加</span>`;
+    }
+
+    function getAddItemButtonHtml(path, index) {
+        return `<span class="add-item-button" data-path="${path}" data-index="${index}">＋アイテムを追加</span>`;
+    }
+
+    function renderAndDisplaySchema() {
+        const schemaHtml = renderSchema(schema, '');
+        document.getElementById('schema-container').innerHTML = schemaHtml;
+    }
+
+    function showAddFieldForm(path, index, targetElement) {
+        currentAddFieldPath = path;
+        currentAddFieldIndex = index;
+
+        // 既存のフォームを削除
+        const existingForm = document.getElementById('field-form-container');
+        if (existingForm) {
+            existingForm.remove();
+        }
+
+        // フォームを生成
+        const form = document.createElement('div');
+        form.id = 'field-form-container';
+        form.className = 'field-form';
+
+        form.innerHTML = `
+            <label>フィールド名: <input type="text" id="field-name"></label>
+            <label>データ型:
+                <select id="field-type">
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="boolean">boolean</option>
+                    <option value="object">object</option>
+                    <option value="array">array</option>
+                    <option value="null">null</option>
+                </select>
+            </label>
+            <label>必須: <input type="checkbox" id="field-required"></label>
+            <button id="add-field-confirm-button">追加</button>
+            <button id="add-field-cancel-button">キャンセル</button>
+        `;
+
+        // イベントリスナーを設定
+        form.querySelector('#add-field-confirm-button').addEventListener('click', function() {
+            const fieldName = form.querySelector('#field-name').value.trim();
+            const fieldType = form.querySelector('#field-type').value;
+            const fieldRequired = form.querySelector('#field-required').checked;
+
+            if (!fieldName) {
+                alert('フィールド名を入力してください');
+                return;
+            }
+
+            addFieldToSchema(currentAddFieldPath, currentAddFieldIndex, fieldName, fieldType, fieldRequired);
+
+            form.remove();
+
+            renderAndDisplaySchema();
+        });
+
+        form.querySelector('#add-field-cancel-button').addEventListener('click', function() {
+            form.remove();
+        });
+
+        // フォームをDOMに挿入
+        targetElement.parentNode.insertBefore(form, targetElement.nextSibling);
+    }
+
+    function showAddItemForm(path, index, targetElement) {
+        currentAddItemPath = path;
+        currentAddItemIndex = index;
+
+        // 既存のフォームを削除
+        const existingForm = document.getElementById('item-form-container');
+        if (existingForm) {
+            existingForm.remove();
+        }
+
+        // フォームを生成
+        const form = document.createElement('div');
+        form.id = 'item-form-container';
+        form.className = 'item-form';
+
+        form.innerHTML = `
+            <label>データ型:
+                <select id="item-type">
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="boolean">boolean</option>
+                    <option value="object">object</option>
+                    <option value="array">array</option>
+                    <option value="null">null</option>
+                </select>
+            </label>
+            <button id="add-item-confirm-button">追加</button>
+            <button id="add-item-cancel-button">キャンセル</button>
+        `;
+
+        // イベントリスナーを設定
+        form.querySelector('#add-item-confirm-button').addEventListener('click', function() {
+            const itemType = form.querySelector('#item-type').value;
+
+            addItemToSchema(currentAddItemPath, currentAddItemIndex, itemType);
+
+            form.remove();
+
+            renderAndDisplaySchema();
+        });
+
+        form.querySelector('#add-item-cancel-button').addEventListener('click', function() {
+            form.remove();
+        });
+
+        // フォームをDOMに挿入
+        targetElement.parentNode.insertBefore(form, targetElement.nextSibling);
+    }
+
+    function addFieldToSchema(path, index, fieldName, fieldType, fieldRequired) {
+        let obj = schema;
+        if (path) {
+            const parts = path.split('.');
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                if (part === 'properties') {
+                    i++;
+                    const propName = parts[i];
+                    const propEntry = obj.properties.find(entry => entry.name === propName);
+                    obj = propEntry.schema;
+                } else if (part.startsWith('items[')) {
+                    const idx = parseInt(part.match(/items\[(\d+)\]/)[1]);
+                    obj = obj.items[idx];
+                }
+            }
+        }
+
+        if (!obj.properties) {
+            obj.properties = [];
+        }
+
+        let newField;
+        if (fieldType === 'object') {
+            newField = {
+                name: fieldName,
+                schema: {
+                    type: 'object',
+                    properties: []
+                }
+            };
+            // 新しいオブジェクトのrequiredフィールドを初期化
+            const newPath = path ? path + '.properties.' + fieldName : 'properties.' + fieldName;
+            requiredFields.set(newPath, []);
+        } else if (fieldType === 'array') {
+            newField = {
+                name: fieldName,
+                schema: {
+                    type: 'array',
+                    items: []
+                }
+            };
+        } else {
+            newField = {
+                name: fieldName,
+                schema: {
+                    type: fieldType
+                }
+            };
+        }
+
+        obj.properties.splice(index, 0, newField);
+
+        // requiredフィールドの処理
+        const reqPath = path;
+        if (fieldRequired) {
+            if (!requiredFields.has(reqPath)) {
+                requiredFields.set(reqPath, []);
+            }
+            const reqFields = requiredFields.get(reqPath);
+            reqFields.push(fieldName);
+        }
+    }
+
+    function addItemToSchema(path, index, itemType) {
+        let obj = schema;
+        if (path) {
+            const parts = path.split('.');
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                if (part === 'properties') {
+                    i++;
+                    const propName = parts[i];
+                    const propEntry = obj.properties.find(entry => entry.name === propName);
+                    obj = propEntry.schema;
+                } else if (part.startsWith('items[')) {
+                    const idx = parseInt(part.match(/items\[(\d+)\]/)[1]);
+                    obj = obj.items[idx];
+                }
+            }
+        }
+
+        if (!obj.items) {
+            obj.items = [];
+        }
+
+        let newItem;
+        if (itemType === 'object') {
+            newItem = {
+                type: 'object',
+                properties: []
+            };
+            // 新しいオブジェクトのrequiredフィールドを初期化
+            const newPath = path + '.items[' + index + ']';
+            requiredFields.set(newPath, []);
+        } else if (itemType === 'array') {
+            newItem = {
+                type: 'array',
+                items: []
+            };
+        } else {
+            newItem = {
+                type: itemType
+            };
+        }
+
+        obj.items.splice(index, 0, newItem);
+    }
+
+    document.getElementById('schema-container').addEventListener('click', function(e) {
+        if (e.target && e.target.classList.contains('add-field-button')) {
+            const path = e.target.getAttribute('data-path');
+            const index = parseInt(e.target.getAttribute('data-index'));
+            showAddFieldForm(path, index, e.target);
+        } else if (e.target && e.target.classList.contains('add-item-button')) {
+            const path = e.target.getAttribute('data-path');
+            const index = parseInt(e.target.getAttribute('data-index'));
+            showAddItemForm(path, index, e.target);
+        }
+    });
+
+    document.getElementById('complete-button').addEventListener('click', function() {
+        const finalSchemaHtml = renderSchemaFinal(schema, '');
+        document.getElementById('final-schema-container').innerHTML = finalSchemaHtml;
+    });
+
+    function renderSchemaFinal(schemaObj, path) {
+        let html = '';
+
+        if (schemaObj.type === 'object') {
+            html += '{\n';
+            html += '  "type": "object",\n';
+            html += '  "properties": {\n';
+
+            const properties = schemaObj.properties || [];
+            properties.forEach((propEntry, index) => {
+                const key = propEntry.name;
+                const prop = propEntry.schema;
+                const propPath = path ? path + '.properties.' + key : 'properties.' + key;
+                html += `    "${key}": `;
+
+                // ネストされたプロパティをインデント
+                const nestedHtml = renderSchemaFinal(prop, propPath).split('\n').map(line => '    ' + line).join('\n');
+                html += nestedHtml;
+
+                if (index < properties.length - 1) {
+                    html += ',\n';
+                } else {
+                    html += '\n';
+                }
+            });
+
+            html += '  }';
+
+            // requiredフィールドの処理
+            const reqFields = requiredFields.get(path) || [];
+            if (reqFields.length > 0) {
+                html += ',\n  "required": [\n';
+                reqFields.forEach((field, index) => {
+                    html += `    "${field}"`;
+                    if (index < reqFields.length - 1) {
+                        html += ',\n';
+                    } else {
+                        html += '\n';
+                    }
+                });
+                html += '  ]';
+            }
+
+            html += '\n}';
+        } else if (schemaObj.type === 'array') {
+            html += '{\n';
+            html += '  "type": "array",\n';
+            html += '  "items": [\n';
+
+            const items = schemaObj.items || [];
+            items.forEach((itemSchema, index) => {
+                const itemPath = path ? path + '.items[' + index + ']' : 'items[' + index + ']';
+
+                // ネストされたアイテムをインデント
+                const nestedHtml = renderSchemaFinal(itemSchema, itemPath).split('\n').map(line => '    ' + line).join('\n');
+                html += nestedHtml;
+
+                if (index < items.length - 1) {
+                    html += ',\n';
+                } else {
+                    html += '\n';
+                }
+            });
+
+            html += '  ]\n';
+            html += '}';
+        } else {
+            html += '{\n';
+            html += `  "type": "${schemaObj.type}"\n`;
+            html += '}';
+        }
+
+        return html;
+    }
+
+    // 保存機能の実装
+    document.getElementById('save-button').addEventListener('click', function() {
+        const data = {
+            schema: schema,
+            requiredFields: Array.from(requiredFields.entries())
+        };
+        const json = JSON.stringify(data);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'schema.json';
+        a.click();
+        URL.revokeObjectURL(url);
+    });
+
+    // 読み込み機能の実装
+    document.getElementById('load-button').addEventListener('click', function() {
+        document.getElementById('load-input').click();
+    });
+
+    document.getElementById('load-input').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) {
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const data = JSON.parse(e.target.result);
+                Object.assign(schema, data.schema);
+                requiredFields.clear();
+                data.requiredFields.forEach(([key, value]) => {
+                    requiredFields.set(key, value);
+                });
+                renderAndDisplaySchema();
+            } catch (err) {
+                alert('ファイルの読み込みに失敗しました。');
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    // 初期レンダリング
+    renderAndDisplaySchema();
+    
+    
+    function copyToClipboard() {
+        // 対象となる要素を取得
+        var schemaContainer = document.getElementById('final-schema-container');
+
+        // コピー用のテキストを取得
+        var textToCopy = schemaContainer.textContent || schemaContainer.innerText;
+
+        // クリップボードにコピー
+        navigator.clipboard.writeText(textToCopy).then(function() {
+        }).catch(function(err) {
+            alert('コピーに失敗しました: ' + err);
+        });
+    }
+</script>
+
+</body>
+</html>
